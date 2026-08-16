@@ -811,6 +811,15 @@ function setupWebSocket(server: any) {
     clientWs.on("message", (messageStr) => {
       try {
         const data = JSON.parse(messageStr.toString());
+        
+        // Handle heartbeat keep-alive
+        if (data.type === "ping") {
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(JSON.stringify({ type: "pong", time: Date.now() }));
+          }
+          return;
+        }
+
         if (!session || !isSessionConnected) return;
 
         if (data.audio) {

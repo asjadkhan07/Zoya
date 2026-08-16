@@ -175,14 +175,12 @@ export default function App() {
         };
 
         session.onError = (err) => {
-          console.warn("Live Voice Session notification:", err);
-          setIsMicActive(false);
-          setOrbState("idle");
-          const msg = typeof err === "string" ? err : err?.message || "Voice stream reconnecting. Click microphone to speak again.";
-          if (msg.includes("Permission") || msg.includes("NotAllowed")) {
+          console.warn("Live Voice Session notice:", err);
+          const msg = typeof err === "string" ? err : err?.message || "";
+          if (msg.includes("Permission") || msg.includes("NotAllowed") || msg.includes("denied")) {
+            setIsMicActive(false);
+            setOrbState("idle");
             setShowPermissionModal(true);
-          } else {
-            setErrorMessage(msg);
           }
         };
 
@@ -191,10 +189,10 @@ export default function App() {
         console.error("Failed to start Live Voice:", err);
         setIsMicActive(false);
         setOrbState("idle");
-        if (err?.name === "NotAllowedError" || err?.message?.includes("Permission")) {
+        if (err?.name === "NotAllowedError" || err?.message?.includes("Permission") || err?.message?.includes("denied")) {
           setShowPermissionModal(true);
         } else {
-          setErrorMessage("Voice stream failed: " + err.message);
+          setErrorMessage("Microphone access issue: " + (err.message || "Please grant mic permission."));
         }
       }
     }
