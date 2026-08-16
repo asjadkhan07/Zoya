@@ -4,9 +4,11 @@ import { HUDOverlay } from "./components/HUDOverlay";
 import { VisionPanel } from "./components/VisionPanel";
 import { MemoryPanel } from "./components/MemoryPanel";
 import { CompanionPanel } from "./components/CompanionPanel";
+import { ChatPanel, ChatMessage } from "./components/ChatPanel";
 import MonitorDashboard from "./components/MonitorDashboard";
 import PermissionModal from "./components/PermissionModal";
 import { LiveSessionManager } from "./services/liveService";
+import { getZoyaResponse, speakZoyaResponse } from "./services/geminiService";
 import { playPCM } from "./utils/audioUtils";
 import { 
   OrbState, 
@@ -41,7 +43,7 @@ export default function App() {
   const [audioLevel, setAudioLevel] = useState<number>(0.2);
 
   // Active HUD Panel
-  const [activePanel, setActivePanel] = useState<"none" | "vision" | "memory" | "companion">("none");
+  const [activePanel, setActivePanel] = useState<"none" | "vision" | "memory" | "companion" | "chat">("none");
   const [activeMainTab, setActiveMainTab] = useState<"orb" | "monitoring">("orb");
 
   // Gemini Live & Chat Voice
@@ -49,8 +51,19 @@ export default function App() {
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [lastTranscript, setLastTranscript] = useState<{ sender: "user" | "zoya"; text: string } | null>({
     sender: "zoya",
-    text: "Greetings. I am ZOYA. Microphone systems online and operational."
+    text: "Greetings. I am ZOYA. Microphone and Text Chat systems online."
   });
+
+  // Chat Messages Thread
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    {
+      id: "init-1",
+      sender: "zoya",
+      text: "Namaste Asjad! I am ZOYA — your sassy, witty AI voice & chat assistant. Ask me anything or type in the chat below!",
+      timestamp: Date.now()
+    }
+  ]);
+  const [isChatThinking, setIsChatThinking] = useState<boolean>(false);
 
   // Vision Analysis State (Upload / Screen file analysis)
   const [visionAnalysis, setVisionAnalysis] = useState<VisionAnalysisResult | null>(null);
@@ -84,6 +97,77 @@ export default function App() {
     return () => window.removeEventListener("mousemove", handleMouseMove);
   }, []);
 
+  // Handle Chat Message Send (Text + Aloud Voice Response)
+  const handleSendChatMessage = async (text: string) => {
+    if (!text.trim()) return;
+
+    const userMsg: ChatMessage = {
+      id: "msg-" + Date.now(),
+      sender: "user",
+      text: text.trim(),
+      timestamp: Date.now()
+    };
+
+    setChatMessages((prev) => [...prev, userMsg]);
+    setLastTranscript({ sender: "user", text: userMsg.text });
+    setIsChatThinking(true);
+    setOrbState("thinking");
+
+    try {
+      // Format chat history for Gemini
+      const historyPayload = chatMessages.slice(-10).map((m) => ({
+        sender: m.sender,
+        text: m.text
+      }));
+
+      const replyText = await getZoyaResponse(userMsg.text, historyPayload);
+
+      const zoyaMsg: ChatMessage = {
+        id: "zoya-" + Date.now(),
+        sender: "zoya",
+        text: replyText,
+        timestamp: Date.now()
+      };
+
+      setChatMessages((prev) => [...prev, zoyaMsg]);
+      setLastTranscript({ sender: "zoya", text: replyText });
+
+      // Speak Zoya's reply aloud
+      if (!isMuted) {
+        setOrbState("speaking");
+        await speakZoyaResponse(replyText);
+      }
+
+      setOrbState("idle");
+    } catch (err: any) {
+      console.error("[CHAT ERROR]:", err);
+      const fallbackReply = "Uff, my brain glitched for a second. Ask again, Asjad!";
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: "err-" + Date.now(),
+          sender: "zoya",
+          text: fallbackReply,
+          timestamp: Date.now()
+        }
+      ]);
+      setLastTranscript({ sender: "zoya", text: fallbackReply });
+      if (!isMuted) {
+        await speakZoyaResponse(fallbackReply);
+      }
+      setOrbState("idle");
+    } finally {
+      setIsChatThinking(false);
+    }
+  };
+
+  // Speak specific message text
+  const handleSpeakMessage = async (text: string) => {
+    setOrbState("speaking");
+    await speakZoyaResponse(text);
+    setOrbState("idle");
+  };
+
   // Gemini Vision Analysis Trigger
   const handleAnalyzeVision = async (imageBase64?: string, customPrompt?: string): Promise<VisionAnalysisResult | null> => {
     try {
@@ -112,11 +196,23 @@ export default function App() {
 
       setVisionAnalysis(result);
       setLastTranscript({ sender: "zoya", text: data.text });
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: "vis-" + Date.now(),
+          sender: "zoya",
+          text: "👁️ Vision Analysis: " + data.text,
+          timestamp: Date.now()
+        }
+      ]);
+
       setOrbState("speaking");
 
       // Play audio if returned and not muted
       if (data.audio && !isMuted) {
         await playPCM(data.audio);
+      } else if (!isMuted) {
+        await speakZoyaResponse(data.text);
       }
 
       setTimeout(() => setOrbState("idle"), 4000);
@@ -161,6 +257,15 @@ export default function App() {
 
         session.onMessage = (sender, text) => {
           setLastTranscript({ sender, text });
+          setChatMessages((prev) => [
+            ...prev,
+            {
+              id: "voice-" + Date.now() + "-" + Math.random(),
+              sender,
+              text,
+              timestamp: Date.now()
+            }
+          ]);
         };
 
         session.onCommand = (url) => {
@@ -192,7 +297,7 @@ export default function App() {
         if (err?.name === "NotAllowedError" || err?.message?.includes("Permission") || err?.message?.includes("denied")) {
           setShowPermissionModal(true);
         } else {
-          setErrorMessage("Microphone access issue: " + (err.message || "Please grant mic permission."));
+          setErrorMessage("Microphone access notice: " + (err.message || "You can also chat directly via the CHAT button below!"));
         }
       }
     }
@@ -284,9 +389,20 @@ export default function App() {
             audioLevel={audioLevel}
           />
 
+          {/* Chat Panel Drawer / Floating Interface */}
+          <ChatPanel
+            isOpen={activePanel === "chat"}
+            onClose={() => setActivePanel("none")}
+            messages={chatMessages}
+            onSendMessage={handleSendChatMessage}
+            onSpeakMessage={handleSpeakMessage}
+            isThinking={isChatThinking}
+            isSpeaking={orbState === "speaking"}
+          />
+
           {/* Modal / Slide-Over HUD Panels */}
           <AnimatePresence>
-            {activePanel !== "none" && (
+            {activePanel !== "none" && activePanel !== "chat" && (
               <motion.div
                 initial={{ opacity: 0, scale: 0.95, y: 20 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -326,3 +442,4 @@ export default function App() {
     </div>
   );
 }
+

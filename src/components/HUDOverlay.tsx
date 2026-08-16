@@ -20,7 +20,8 @@ import {
   Activity, 
   Cpu, 
   Zap,
-  Maximize2
+  Maximize2,
+  MessageSquare
 } from "lucide-react";
 
 interface HUDOverlayProps {
@@ -32,8 +33,8 @@ interface HUDOverlayProps {
   onToggleMic: () => void;
   isMuted: boolean;
   onToggleMute: () => void;
-  activePanel: "none" | "vision" | "memory" | "companion";
-  onSelectPanel: (panel: "none" | "vision" | "memory" | "companion") => void;
+  activePanel: "none" | "vision" | "memory" | "companion" | "chat";
+  onSelectPanel: (panel: "none" | "vision" | "memory" | "companion" | "chat") => void;
   lastTranscript: { sender: "user" | "zoya"; text: string } | null;
   audioLevel: number;
 }
@@ -130,18 +131,26 @@ export const HUDOverlay: React.FC<HUDOverlayProps> = ({
                 {lastTranscript.sender === "zoya" ? "ZOYA AI RESPONSE" : "USER VOICE INPUT"}
               </span>
 
-              {/* Audio Waveform Indicator */}
-              <div className="flex items-center gap-1 h-3">
-                {[0.4, 0.8, 0.3, 0.9, 0.5, 0.7].map((h, i) => (
-                  <div
-                    key={i}
-                    className="w-1 bg-cyan-400 rounded-full transition-all duration-100"
-                    style={{
-                      height: `${Math.max(3, h * audioLevel * 16)}px`,
-                      backgroundColor: lastTranscript.sender === "zoya" ? "#ef4444" : "#06b6d4",
-                    }}
-                  />
-                ))}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => onSelectPanel("chat")}
+                  className="px-2 py-0.5 rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 text-[10px] flex items-center gap-1 transition-all"
+                >
+                  <MessageSquare className="w-2.5 h-2.5" /> Open Chat
+                </button>
+                {/* Audio Waveform Indicator */}
+                <div className="flex items-center gap-1 h-3">
+                  {[0.4, 0.8, 0.3, 0.9, 0.5, 0.7].map((h, i) => (
+                    <div
+                      key={i}
+                      className="w-1 bg-cyan-400 rounded-full transition-all duration-100"
+                      style={{
+                        height: `${Math.max(3, h * audioLevel * 16)}px`,
+                        backgroundColor: lastTranscript.sender === "zoya" ? "#ef4444" : "#06b6d4",
+                      }}
+                    />
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -206,6 +215,19 @@ export const HUDOverlay: React.FC<HUDOverlayProps> = ({
           <div className="h-6 w-px bg-slate-700 mx-1" />
 
           {/* Panel Controls */}
+          <button
+            onClick={() => onSelectPanel(activePanel === "chat" ? "none" : "chat")}
+            className={`p-2.5 px-3 rounded-xl border text-xs font-mono flex items-center gap-1.5 transition-all shadow-lg ${
+              activePanel === "chat"
+                ? "bg-gradient-to-r from-red-500 to-pink-600 text-white font-bold border-red-400"
+                : "bg-slate-900 border-red-500/40 text-red-300 hover:bg-red-950/40 hover:text-white"
+            }`}
+            title="Open Chat with Zoya"
+          >
+            <MessageSquare className="w-4 h-4" />
+            <span className="font-bold">CHAT</span>
+          </button>
+
           <button
             onClick={() => onSelectPanel(activePanel === "vision" ? "none" : "vision")}
             className={`p-2.5 px-3 rounded-xl border text-xs font-mono flex items-center gap-1.5 transition-all ${

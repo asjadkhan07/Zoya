@@ -1,5 +1,5 @@
 import { processCommand } from "./commandService";
-import { getZoyaResponse, getZoyaAudio } from "./geminiService";
+import { getZoyaResponse, getZoyaAudio, speakZoyaResponse } from "./geminiService";
 import { playPCM } from "../utils/audioUtils";
 
 export class LiveSessionManager {
@@ -10,15 +10,13 @@ export class LiveSessionManager {
   private mediaStream: MediaStream | null = null;
   private processor: ScriptProcessorNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
+  private muteGain: GainNode | null = null;
   
   // Heartbeat & Reconnect
   private pingInterval: any = null;
   private reconnectTimer: any = null;
   private reconnectAttempts: number = 0;
   
-  // Web Speech API continuous listener (bulletproof local voice transcription fallback)
-  private speechRecognition: any = null;
-  private isSpeechRecognitionActive: boolean = false;
   private isProcessingPrompt: boolean = false;
   
   // Audio playback state
@@ -41,13 +39,10 @@ export class LiveSessionManager {
     this.onStateChange("processing");
 
     try {
-      // 1. Initialize Audio MediaStream and Contexts
+      // 1. Initialize Audio MediaStream and Web Audio Pipeline
       await this.initMicrophone();
 
-      // 2. Initialize Web Speech API for continuous speech fallback
-      this.initSpeechRecognition();
-
-      // 3. Connect to WebSocket Live stream
+      // 2. Connect to WebSocket Live stream
       this.connectWebSocket();
     } catch (error: any) {
       console.error("[VOICE ENGINE] Failed to start:", error);
@@ -80,10 +75,14 @@ export class LiveSessionManager {
     this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
     this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
 
+    // Silent gain node to prevent microphone audio looping through speakers
+    this.muteGain = this.audioContext.createGain();
+    this.muteGain.gain.value = 0;
+
     this.processor.onaudioprocess = (e) => {
       if (!this.shouldBeRunning) return;
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.isConnected) return;
-      if (this.isPlaying) return; // Prevent echo while assistant is speaking
+      if (this.isPlaying) return; // Prevent mic echo while Zoya is speaking
 
       const inputData = e.inputBuffer.getChannelData(0);
       const pcm16 = new Int16Array(inputData.length);
@@ -114,7 +113,8 @@ export class LiveSessionManager {
     };
 
     this.source.connect(this.processor);
-    this.processor.connect(this.audioContext.destination);
+    this.processor.connect(this.muteGain);
+    this.muteGain.connect(this.audioContext.destination);
   }
 
   private connectWebSocket() {
@@ -216,7 +216,7 @@ export class LiveSessionManager {
         this.isConnected = false;
         if (this.pingInterval) clearInterval(this.pingInterval);
 
-        // AUTO-RECONNECT in background if user still wants mic on
+        // Auto-reconnect in background if user still wants mic on
         if (this.shouldBeRunning) {
           this.scheduleReconnect();
         }
@@ -252,70 +252,7 @@ export class LiveSessionManager {
     }, delay);
   }
 
-  // Web Speech API Continuous Listener
-  private initSpeechRecognition() {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      return;
-    }
-
-    try {
-      this.speechRecognition = new SpeechRecognition();
-      this.speechRecognition.continuous = true;
-      this.speechRecognition.interimResults = false;
-      this.speechRecognition.lang = "en-IN"; // English/Hindi accent optimized
-
-      this.speechRecognition.onstart = () => {
-        this.isSpeechRecognitionActive = true;
-        if (this.shouldBeRunning) {
-          this.onStateChange("listening");
-        }
-      };
-
-      this.speechRecognition.onresult = async (event: any) => {
-        if (!this.shouldBeRunning || this.isProcessingPrompt || this.isPlaying) return;
-
-        const lastResultIndex = event.results.length - 1;
-        const transcript = event.results[lastResultIndex][0].transcript.trim();
-
-        if (transcript.length > 1) {
-          console.log("[SPEECH RECOGNITION] Transcribed:", transcript);
-          this.onMessage("user", transcript);
-
-          // If WebSocket is alive and handling full-duplex live session,
-          // it also transmits audio. If WebSocket is reconnecting, use Chat/TTS fallback:
-          if (!this.isConnected || this.reconnectAttempts > 0) {
-            this.handleDirectPrompt(transcript);
-          }
-        }
-      };
-
-      this.speechRecognition.onerror = (e: any) => {
-        // Ignore normal "no-speech" pauses
-        if (e.error !== "no-speech") {
-          console.warn("[SPEECH RECOGNITION] Notification:", e.error);
-        }
-      };
-
-      this.speechRecognition.onend = () => {
-        this.isSpeechRecognitionActive = false;
-        // Keep speech recognition continuously running as long as mic is toggled ON
-        if (this.shouldBeRunning) {
-          try {
-            this.speechRecognition.start();
-          } catch (e) {}
-        }
-      };
-
-      this.speechRecognition.start();
-    } catch (err) {
-      console.warn("[SPEECH RECOGNITION] Init fallback notice:", err);
-    }
-  }
-
-  private async handleDirectPrompt(prompt: string) {
+  public async handleDirectPrompt(prompt: string) {
     if (this.isProcessingPrompt) return;
     this.isProcessingPrompt = true;
     this.onStateChange("processing");
@@ -326,10 +263,7 @@ export class LiveSessionManager {
 
       if (!this.isMuted) {
         this.onStateChange("speaking");
-        const audioBase64 = await getZoyaAudio(reply);
-        if (audioBase64) {
-          await playPCM(audioBase64);
-        }
+        await speakZoyaResponse(reply);
       }
     } catch (err) {
       console.error("[DIRECT PROMPT ERROR]:", err);
@@ -337,6 +271,8 @@ export class LiveSessionManager {
       this.isProcessingPrompt = false;
       if (this.shouldBeRunning) {
         this.onStateChange("listening");
+      } else {
+        this.onStateChange("idle");
       }
     }
   }
@@ -368,14 +304,16 @@ export class LiveSessionManager {
       }
 
       source.start(this.nextPlayTime);
-      this.nextPlayTime += audioBuffer.duration;
       this.isPlaying = true;
+      this.nextPlayTime += audioBuffer.duration;
 
       source.onended = () => {
-        if (this.playbackContext && this.playbackContext.currentTime >= this.nextPlayTime - 0.1) {
+        if (this.playbackContext && this.playbackContext.currentTime >= this.nextPlayTime - 0.05) {
           this.isPlaying = false;
           if (this.shouldBeRunning) {
             this.onStateChange("listening");
+          } else {
+            this.onStateChange("idle");
           }
         }
       };
@@ -409,19 +347,17 @@ export class LiveSessionManager {
       this.reconnectTimer = null;
     }
 
-    if (this.speechRecognition) {
-      try {
-        this.speechRecognition.onend = null;
-        this.speechRecognition.stop();
-      } catch (e) {}
-      this.speechRecognition = null;
-    }
-
     if (this.processor) {
       try {
         this.processor.disconnect();
       } catch (err) {}
       this.processor = null;
+    }
+    if (this.muteGain) {
+      try {
+        this.muteGain.disconnect();
+      } catch (err) {}
+      this.muteGain = null;
     }
     if (this.source) {
       try {
