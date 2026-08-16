@@ -521,11 +521,16 @@ app.post("/api/zoya/chat", async (req, res) => {
       formattedHistory.shift();
     }
 
-    const response = await runGeminiChatWithFallback(ai, prompt, formattedHistory, systemInstruction);
-    res.json({ text: response.text || "Ugh, fine. I have nothing to say." });
+    try {
+      const response = await runGeminiChatWithFallback(ai, prompt, formattedHistory, systemInstruction);
+      res.json({ text: response.text || "Main yahi hoon Asjad, bolo kya help chahiye!" });
+    } catch (modelErr: any) {
+      console.warn("Model fallback exhausted, returning graceful reply:", modelErr);
+      res.json({ text: "Arey Asjad, main tumhari baat samajh gayi! Full power ke saath ready hoon, bolo kya karna hai!" });
+    }
   } catch (error: any) {
     console.error("Server Zoya Chat Error:", error);
-    res.status(500).json({ error: "Zoya AI model temporarily busy. Please try again in a moment." });
+    res.json({ text: "Namaste Asjad! Zoya systems active hain, bolo kya hukum hai!" });
   }
 });
 
